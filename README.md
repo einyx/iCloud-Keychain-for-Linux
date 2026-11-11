@@ -11,26 +11,30 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 ## What you'll need
 
-A configured Anisette v3 server. This repo includes [omnisette-server](omnisette-server/) (Rust, [SideStore/omnisette-server](https://github.com/SideStore/omnisette-server)) so you can run one locally:
+A configured Anisette v3 server. This repo includes [anisette-v3-server](anisette-v3-server/) ([Dadoum/anisette-v3-server](https://github.com/Dadoum/anisette-v3-server), written in D) so you can run one locally.
+
+With Docker (recommended):
 
 ```
-./install-all.sh                          # sets up icp + builds omnisette-server (if cargo is installed)
+docker run -d --restart unless-stopped --name anisette-v3 \
+  -p 6969:6969 -v anisette-v3_data:/home/Alcoholic/.config/anisette-v3/lib/ \
+  dadoum/anisette-v3-server
 export ICP_ANISETTE_URL="http://localhost:6969"
-./omnisette-server/target/release/omnisette-server
 ```
 
-See [omnisette-server/README.md](omnisette-server/README.md) for prerequisites (Rust toolchain and extracted Apple Music APK libraries).
+`./install-all.sh` sets up `icp` and can help prepare the local server (uses Docker if available, or can build from source with `dub`/`ldc2`). See [anisette-v3-server/README.md](anisette-v3-server/README.md) for details.
 
-### Run omnisette-server as a service
+### Run anisette-v3-server as a service
 
-So it is always up when you need `icp`, install it as a systemd user service:
+If you run the included server with Docker, start it with a restart policy so it stays up:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp host/omnisette.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now omnisette.service
+docker run -d --restart unless-stopped --name anisette-v3 \
+  -p 6969:6969 -v anisette-v3_data:/home/Alcoholic/.config/anisette-v3/lib/ \
+  dadoum/anisette-v3-server
 ```
+
+(If you previously used the Rust `omnisette-server`, stop/remove it first: `pkill -f omnisette-server` or `docker rm -f ...` as appropriate.)
 
 Then point `icp` at it:
 
@@ -40,7 +44,7 @@ export ICP_ANISETTE_URL="http://127.0.0.1:6969"
 
 Check it is alive with `curl http://127.0.0.1:6969/v3/client_info`.
 
-You can also use another Anisette server (e.g. [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine), [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server), or a trusted third party):
+You can also use another Anisette server (e.g. [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine), [omnisette-server](https://github.com/SideStore/omnisette-server), or a trusted third party):
 
 ```
 export ICP_ANISETTE_URL="https://your-anisette-server.example"
@@ -51,7 +55,7 @@ The configured URL must return anisette headers as JSON to a `GET` request. Its
 
 ## Install
 
-### One-go install (icp + local omnisette-server)
+### One-go install (icp + local anisette-v3-server)
 
 ```bash
 git clone https://github.com/einyx/iCloud-Keychain-for-Linux.git
@@ -60,7 +64,7 @@ cd iCloud-Keychain-for-Linux
 source .venv/bin/activate
 ```
 
-`install-all.sh` sets up `icp` in `.venv` and attempts to prepare/build the included [omnisette-server](omnisette-server/) (downloads required APK libraries and runs `cargo build --release` when `cargo` is available).
+`install-all.sh` sets up `icp` in `.venv` and helps prepare the included [anisette-v3-server](anisette-v3-server/) (Docker if available, or source build with `dub`/`ldc2`). Make sure the Anisette server is running on `http://localhost:6969` (or update `ICP_ANISETTE_URL`) before `icp login`. 
 
 ### Manual install (icp only)
 

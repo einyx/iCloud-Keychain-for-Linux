@@ -9,8 +9,6 @@ config/
 *.enc
 master.key
 
-# Local omnisette-server build/runtime artifacts
-omnisette-server/target/
-omnisette-server/applemusic.apk
-omnisette-server/lib/*/libstoreservicescore.so
-omnisette-server/lib/*/libCoreADI.so
+# Local anisette-v3-server build artifacts
+anisette-v3-server/anisette-v3-server
+anisette-v3-server/.dub/

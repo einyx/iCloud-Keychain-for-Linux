@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OMNI_DIR="$ROOT/omnisette-server"
+ANISETTE_DIR="$ROOT/anisette-v3-server"
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 step() { printf '\n\033[1;36m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
@@ -11,39 +11,43 @@ warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 
 step "Installing iCloud Keychain for Linux (icp)"
 command -v python3 >/dev/null || die "'python3' not found. Please install it."
-python3 -m venv "$ROOT/.venv"
+
+if ! python3 -m venv "$ROOT/.venv" 2>/dev/null; then
+  warn "python3 -m venv failed (ensurepip may be missing). Trying --without-pip..."
+  python3 -m venv --without-pip "$ROOT/.venv"
+  if ! "$ROOT/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+    if command -v curl >/dev/null; then
+      curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$ROOT/.venv/get-pip.py"
+      "$ROOT/.venv/bin/python" "$ROOT/.venv/get-pip.py"
+      rm -f "$ROOT/.venv/get-pip.py"
+    else
+      die "pip not available in venv and curl not found to bootstrap it."
+    fi
+  fi
+fi
+
 "$ROOT/.venv/bin/pip" install --upgrade pip >/dev/null
 "$ROOT/.venv/bin/pip" install -e "$ROOT"
 chmod +x "$ROOT/host/icp-host.sh" "$ROOT/host/install.sh"
 
-step "Setting up omnisette-server (local Anisette v3, Rust)"
-if [[ ! -d "$OMNI_DIR" ]]; then
-  die "omnisette-server/ not found in $ROOT"
+step "Setting up anisette-v3-server (local Anisette v3, D)"
+if [[ ! -d "$ANISETTE_DIR" ]]; then
+  die "anisette-v3-server/ not found in $ROOT"
 fi
 
-# Fetch Apple Music APK libraries required by omnisette (if not already present)
-if [[ ! -f "$OMNI_DIR/lib/x86_64/libstoreservicescore.so" && ! -f "$OMNI_DIR/lib/arm64-v8a/libstoreservicescore.so" ]]; then
-  if command -v curl >/dev/null && command -v unzip >/dev/null; then
-    info "Downloading Apple Music APK to extract required libraries..."
-    curl -fL --progress-bar -o "$OMNI_DIR/applemusic.apk" \
-      "https://apps.mzstatic.com/content/android-apple-music-apk/applemusic.apk" \
-      || warn "Could not download Apple Music APK; omnisette-server may not work until libs are provided."
-    if [[ -f "$OMNI_DIR/applemusic.apk" ]]; then
-      unzip -oq "$OMNI_DIR/applemusic.apk" 'lib/*/libstoreservicescore.so' 'lib/*/libCoreADI.so' -d "$OMNI_DIR" || true
-      rm -f "$OMNI_DIR/applemusic.apk"
-    fi
+if command -v docker >/dev/null; then
+  info "Docker detected. You can run the server with:"
+  info "  docker run -d --restart unless-stopped --name anisette-v3 -p 6969:6969 -v anisette-v3_data:/home/Alcoholic/.config/anisette-v3/lib/ dadoum/anisette-v3-server"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx anisette-v3; then
+    info "Container 'anisette-v3' is already running."
   else
-    warn "curl/unzip not found; skipping APK library extraction. See omnisette-server/README.md."
+    warn "Container 'anisette-v3' is not running. Start it with the command above if needed."
   fi
+elif command -v dub >/dev/null && command -v ldc2 >/dev/null; then
+  info "Building anisette-v3-server with dub/ldc2..."
+  (cd "$ANISETTE_DIR" && DC=ldc2 dub build -c "static" --build-mode allAtOnce -b release --compiler=ldc2)
 else
-  info "omnisette libraries already present"
-fi
-
-if command -v cargo >/dev/null; then
-  info "Building omnisette-server (cargo build --release)..."
-  (cd "$OMNI_DIR" && cargo build --release)
-else
-  warn "cargo not found; skipping Rust build. Install Rust (https://rustup.rs) and run: (cd omnisette-server && cargo build --release)"
+  warn "Neither Docker nor dub+ldc2 found. See anisette-v3-server/README.md for setup options."
 fi
 
 step "Done"
@@ -52,10 +56,5 @@ printf 'iCloud Keychain for Linux (icp):\n'
 printf '  Activate: source %s/.venv/bin/activate\n' "$ROOT"
 printf '  Login:    export ICP_ANISETTE_URL="http://localhost:6969" && icp login\n'
 printf '  Browser host: %s/host/install.sh [CHROME_EXTENSION_ID]\n\n' "$ROOT"
-printf 'omnisette-server (local Anisette v3):\n'
-if [[ -x "$OMNI_DIR/target/release/omnisette-server" ]]; then
-  printf '  Run:      %s/target/release/omnisette-server\n' "$OMNI_DIR"
-else
-  printf '  Build/run: see %s/README.md (requires Rust/cargo and extracted APK libs)\n' "$OMNI_DIR"
-fi
-printf '  Then set: export ICP_ANISETTE_URL="http://localhost:6969"\n\n'
+printf 'anisette-v3-server (local Anisette v3):\n'
+printf '  Ensure it is running on http://localhost:6969 and set ICP_ANISETTE_URL accordingly.\n\n'
