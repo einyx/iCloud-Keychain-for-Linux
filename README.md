@@ -21,6 +21,25 @@ export ICP_ANISETTE_URL="http://localhost:6969"
 
 See [omnisette-server/README.md](omnisette-server/README.md) for prerequisites (Rust toolchain and extracted Apple Music APK libraries).
 
+### Run omnisette-server as a service
+
+So it is always up when you need `icp`, install it as a systemd user service:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp host/omnisette.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now omnisette.service
+```
+
+Then point `icp` at it:
+
+```
+export ICP_ANISETTE_URL="http://127.0.0.1:6969"
+```
+
+Check it is alive with `curl http://127.0.0.1:6969/v3/client_info`.
+
 You can also use another Anisette server (e.g. [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine), [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server), or a trusted third party):
 
 ```
