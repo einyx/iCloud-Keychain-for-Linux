@@ -13,12 +13,45 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 A configured Anisette v3 server. This repo includes [anisette-v3-server](anisette-v3-server/) ([Dadoum/anisette-v3-server](https://github.com/Dadoum/anisette-v3-server), written in D) so you can run one locally.
 
+### The server has to be a desktop one
+
+Sign-in with an Apple ID goes through Apple's GrandSlam service, which since
+October 2026 compares the platform the anisette server advertises in
+`X-Mme-Client-Info` with the platform of the ADI library that produced the
+one-time password, and refuses the request with `-80045` ("This action cannot
+be completed at this time.") when the two disagree:
+
+```
+error: sign-in failed: sign-in: init failed: ec=-80045 em='This action cannot be completed at this time.'
+```
+
+`anisette-v3-server` builds the one-time password with the ADI libraries of
+the Apple Music application for Android, so its one-time password says
+*Android* while it advertises a Mac. Apple therefore refuses every sign-in
+with `-80045`, whatever identity the server is told to advertise. The
+comparison is made on the one-time password, not on the identity that is
+sent, so this cannot be worked around from the client side.
+
+Only the macOS and the Windows ADI libraries produce an identity GrandSlam
+accepts. [anisette-server-rs](https://github.com/fdkevin0/anisette-server-rs)
+runs both under an emulator:
+
+```bash
+docker run -d --restart unless-stopped --name anisette \
+  -p 6969:6969 --mount type=volume,src=anisette-data,dst=/data \
+  ghcr.io/fdkevin0/anisette-server-rs:latest --backend macos
+export ICP_ANISETTE_URL="http://127.0.0.1:6969"
+```
+
+That server can also pick a backend per request, with `?backend=macos`,
+`?backend=windows` or `?backend=android`.
+
+### The included anisette-v3-server
+
 With Docker (recommended):
 
 ```
-docker run -d --restart unless-stopped --name anisette-v3 \
-  -p 6969:6969 -v anisette-v3_data:/home/Alcoholic/.config/anisette-v3/lib/ \
-  dadoum/anisette-v3-server
+docker run -d --restart always --name anisette-v3 -p 6969:6969 --volume anisette-v3_data:/home/Alcoholic/.config/anisette-v3/lib/ dadoum/anisette-v3-server
 export ICP_ANISETTE_URL="http://localhost:6969"
 ```
 
