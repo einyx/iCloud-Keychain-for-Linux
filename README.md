@@ -11,7 +11,17 @@ reverse engineering attempt and **is not affiliated with Apple in any way**.
 
 ## What you'll need
 
-A configured Anisette server (recommend [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine) to run locally on Linux or [omnisette-server](https://github.com/SideStore/omnisette-server), or any trusted third party anisette server):
+A configured Anisette v3 server. This repo includes [omnisette-server](omnisette-server/) (Rust, [SideStore/omnisette-server](https://github.com/SideStore/omnisette-server)) so you can run one locally:
+
+```
+./install-all.sh                          # sets up icp + builds omnisette-server (if cargo is installed)
+export ICP_ANISETTE_URL="http://localhost:6969"
+./omnisette-server/target/release/omnisette-server
+```
+
+See [omnisette-server/README.md](omnisette-server/README.md) for prerequisites (Rust toolchain and extracted Apple Music APK libraries).
+
+You can also use another Anisette server (e.g. [Anisette-on-Wine](https://github.com/Sank6/Anisette-on-Wine), [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server), or a trusted third party):
 
 ```
 export ICP_ANISETTE_URL="https://your-anisette-server.example"
@@ -21,6 +31,19 @@ The configured URL must return anisette headers as JSON to a `GET` request. Its
 `/v3/client_info` endpoint must return `client_info` and `user_agent`.
 
 ## Install
+
+### One-go install (icp + local omnisette-server)
+
+```bash
+git clone https://github.com/einyx/iCloud-Keychain-for-Linux.git
+cd iCloud-Keychain-for-Linux
+./install-all.sh
+source .venv/bin/activate
+```
+
+`install-all.sh` sets up `icp` in `.venv` and attempts to prepare/build the included [omnisette-server](omnisette-server/) (downloads required APK libraries and runs `cargo build --release` when `cargo` is available).
+
+### Manual install (icp only)
 
 From the project folder:
 
