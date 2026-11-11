@@ -29,6 +29,22 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 source .venv/bin/activate
 ```
 
+### Install iCloud Keychain + Granola in one go
+
+This repo includes [Granola for Linux](Granola-for-Linux/) as a git submodule. To set up both tools together:
+
+```bash
+git clone --recurse-submodules https://github.com/einyx/iCloud-Keychain-for-Linux.git
+cd iCloud-Keychain-for-Linux
+./install-all.sh "/path/to/Granola.dmg"
+```
+
+If you already cloned without submodules, `install-all.sh` will initialize them automatically.
+
+- Pass the Granola `.dmg` to install both `icp` and Granola in one run.
+- Omit the `.dmg` to install only `icp`: `./install-all.sh`
+- `icp` still requires a configured Anisette v3 server (see above). A Rust option is [SideStore/omnisette-server](https://github.com/SideStore/omnisette-server).
+
 ## Sign in
 
 ```
