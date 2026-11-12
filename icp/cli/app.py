@@ -969,7 +969,7 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(
         prog="icp",
-        description="iCloud Passwords for Linux - read-only iCloud Keychain autofill")
+        description="iCloud Passwords for Linux - iCloud Keychain autofill, and writing to it")
     p.add_argument("--anisette",
                    help="anisette server URL (required unless $ICP_ANISETTE_URL is set)")
     sub = p.add_subparsers(dest="cmd", required=True)
