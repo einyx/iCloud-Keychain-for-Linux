@@ -29,6 +29,37 @@ ID_TYPE_USER = 7
 OP_TYPE_RECORD_RETRIEVE_CHANGES = 213
 FIELD_RETRIEVE_CHANGES = 213
 
+# --- write path -------------------------------------------------------------
+# The CloudKitDaemon message layout (field numbers) comes from the schema in
+# `doug-leith/ios-protobuf-decoding` (ios_decoder/protos/CloudKitDaemon/ckdp.proto),
+# reconstructed from CloudKitDaemon's binary. The names used here are the ones the
+# .proto uses; see RESEARCH.md "transport/ckks.py".
+
+OP_TYPE_RECORD_SAVE = 210
+FIELD_RECORD_SAVE = 210
+OP_TYPE_RECORD_DELETE = 214
+FIELD_RECORD_DELETE = 214
+
+# CKDPIdentifier.Type
+ID_TYPE_RECORD = 1
+
+# CKDPRecordFieldValue.Type
+VALUE_TYPE_BYTES = 1
+VALUE_TYPE_STRING = 3
+VALUE_TYPE_REFERENCE = 5
+VALUE_TYPE_INT64 = 7
+
+# CKDPRecordReference.Type - the keychain's parent links use VALIDATING
+REFERENCE_TYPE_VALIDATING = 3
+
+# CKDPRecordPermission
+PERMISSION_READ_WRITE = 2
+
+# CKDPRecordSaveRequest.SaveSemantics
+SAVE_SEMANTICS_FAIL_IF_OUTDATED = 1
+SAVE_SEMANTICS_FAIL_IF_EXISTS = 2      # create: fail if the record is already there
+SAVE_SEMANTICS_OVERRIDE = 3            # update: overwrite whatever is there
+
 
 def _identifier(name: str, type_: int) -> bytes:
     return Writer().string(1, name).uint64(2, type_).finish()
@@ -153,3 +184,136 @@ def parse_retrieve_changes_response(raw: bytes) -> dict:
         if rec is not None:
             records.append(parse_record(rec))
     return {"records": records, "continuation_token": first(f, 2), "status": first(f, 4)}
+
+
+# --- write path -------------------------------------------------------------
+#
+# CKDPRecordSaveRequest{record(1), merge(2), fieldsToDeleteIfExistOnMerges(3), etag(4),
+#   conflictLoserUpdate(5), saveSemantics(6), zoneProtectionInfoTag(7),
+#   recordProtectionInfoTag(8)}
+#
+# The keychain's zones carry no protection info at all (a zone retrieve shows no
+# `protectionInfo`, and no item record has one either), so the two protection-tag
+# fields are left unset - they only exist for records the server encrypts itself.
+
+
+def build_record_identifier(record_name: str, zone: str, user_id: str) -> bytes:
+    """CKDPRecordIdentifier{value(1)=Identifier{name, type=RECORD},
+    zoneIdentifier(2)=RecordZoneIdentifier{zone, owner=cloudKitUserId}}."""
+    return (Writer()
+            .message(1, _identifier(record_name, ID_TYPE_RECORD))
+            .message(2, record_zone_identifier(zone, user_id))
+            .finish())
+
+
+def build_reference_value(record_name: str, zone: str, user_id: str) -> bytes:
+    """A CKDPRecordFieldValue holding a reference to another record (the keychain uses
+    these for `parentkeyref`, the pointer at the view's class key)."""
+    reference = (Writer()
+                 .uint64(1, REFERENCE_TYPE_VALIDATING)
+                 .message(2, build_record_identifier(record_name, zone, user_id))
+                 .finish())
+    return (Writer()
+            .uint64(1, VALUE_TYPE_REFERENCE)
+            .message(9, reference)
+            .finish())
+
+
+def build_field_value(value) -> bytes:
+    """A CKDPRecordFieldValue for a python value: bytes -> BYTES, str -> STRING,
+    int -> INT64. The `type` discriminator says what the value *is*, not how it is
+    stored, and it is what a reader branches on."""
+    if isinstance(value, (bytes, bytearray)):
+        return Writer().uint64(1, VALUE_TYPE_BYTES).bytes(2, bytes(value)).finish()
+    if isinstance(value, str):
+        return Writer().uint64(1, VALUE_TYPE_STRING).string(7, value).finish()
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, int):
+        return Writer().uint64(1, VALUE_TYPE_INT64).uint64(4, value).finish()
+    raise TypeError(f"cannot encode {type(value).__name__} as a CloudKit field value")
+
+
+def build_record_field(name: str, value) -> bytes:
+    """CKDPRecordField{identifier(1)={name}, value(2)}."""
+    return (Writer()
+            .message(1, Writer().string(1, name).finish())
+            .message(2, value)
+            .finish())
+
+
+def build_record(record_name: str, record_type: str, zone: str, user_id: str,
+                 fields: list[bytes], *, permission: int = PERMISSION_READ_WRITE) -> bytes:
+    """A CKDPRecord: {recordIdentifier(2), type(3), fields(7), permission(15)}.
+
+    `etag`, `createdBy`, `timeStatistics`, `modifiedBy` and friends are server-owned and
+    deliberately left out - a create has no etag yet."""
+    w = Writer()
+    w.message(2, build_record_identifier(record_name, zone, user_id))
+    w.message(3, Writer().string(1, record_type).finish())
+    for f in fields:
+        w.message(7, f)
+    w.uint64(15, permission)
+    return w.finish()
+
+
+def build_record_save_request(record: bytes, *, merge: bool = True,
+                              save_semantics: int = SAVE_SEMANTICS_FAIL_IF_EXISTS,
+                              zone_protection_info_tag: str | None = None,
+                              record_protection_info_tag: str | None = None) -> bytes:
+    """A CKDPRecordSaveRequest carrying one record.
+
+    `merge` keeps fields the request does not mention - it is the safety net for an
+    update, not a licence to send a partial record.
+    `save_semantics` 2 (FAIL_IF_EXISTS) creates, 3 (OVERRIDE) updates.
+    """
+    w = Writer()
+    w.message(1, record)
+    w.bool(2, merge)
+    w.uint64(6, save_semantics)
+    w.string(7, zone_protection_info_tag)
+    w.string(8, record_protection_info_tag)
+    return w.finish()
+
+
+def parse_record_save_response(raw: bytes) -> dict:
+    """A CKDPRecordSaveResponse{etag(2), timeStatistics(3), serverFields(4)} ->
+    {etag, record}. The server's copy of the record is what the write actually
+    produced, so it - not the request - is the thing to check."""
+    f = decode_fields(raw)
+    server = first(f, 4)
+    return {
+        "etag": first_str(f, 2),
+        "record": parse_record(server) if server is not None else None,
+    }
+
+
+def build_record_delete_request(record_name: str, zone: str, user_id: str,
+                                etag: str | None = None) -> bytes:
+    """A CKDPRecordDeleteRequest{recordIdentifier(1), etag(2)} - the rollback path for a
+    write that turned out to be wrong."""
+    w = Writer()
+    w.message(1, build_record_identifier(record_name, zone, user_id))
+    w.string(2, etag)
+    return w.finish()
+
+
+def fetch_zone_records(transport, zone: str, user_id: str, *,                       bundle: str = "com.apple.securityd",
+                       max_pages: int = 50) -> list:
+    """Every record in one zone, paginated. LIVE.
+
+    The keychain's zones are bigger than one page (the Passwords zone holds well
+    over 500 records), so a caller that needs the whole zone has to follow the
+    continuation token."""
+    zid = record_zone_identifier(zone, user_id)
+    out: list = []
+    continuation = None
+    for _ in range(max_pages):
+        raw = transport.fetch_records(build_retrieve_changes_request(zid, continuation),
+                                      bundle=bundle)
+        page = parse_retrieve_changes_response(raw)
+        out.extend(page["records"])
+        continuation = page.get("continuation_token")
+        if page.get("status") != 1 or not continuation:
+            break
+    return out

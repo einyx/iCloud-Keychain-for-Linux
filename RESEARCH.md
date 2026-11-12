@@ -433,6 +433,131 @@ from the bottle). We persist that sponsor key at join (`octagon['sponsor']`) and
 UNION the sponsor fetch with our own - see `octagon/client.py fetch_recoverable_tlks`. Mirrors
 rustpush `join_clique_from_escrow` -> `fetch_shares_for(other_identity)`.
 
+## Stage 6 - Writing to the keychain
+
+The read path stops at "here is the password". Writing is the other direction and needs three
+things the read path never had to know: the CloudKit record-save operation, the shape of a
+`CKDPRecord`, and which key a new item hangs under.
+
+### The schema
+
+The field numbers come from `doug-leith/ios-protobuf-decoding`
+(`ios_decoder/protos/CloudKitDaemon/ckdp.proto`), a `.proto` reconstructed from CloudKitDaemon's
+binary - the authoritative source for the message layout. The names used in `transport/ckks.py`
+are that file's.
+
+```
+CKDPRecordSaveRequest { record = 1; merge = 2; fieldsToDeleteIfExistOnMerges = 3; etag = 4;
+                         conflictLoserUpdate = 5; saveSemantics = 6; zoneProtectionInfoTag = 7;
+                         recordProtectionInfoTag = 8; ... }
+CKDPRecordSaveResponse { etag = 2; timeStatistics = 3; serverFields = 4; ... }
+CKDPRecord { etag = 1; recordIdentifier = 2; type = 3; createdBy = 4; timeStatistics = 5;
+              repeated fields = 7; shareId = 8; modifiedBy = 9; conflictLoserEtags = 10;
+              modifiedByDevice = 11; pluginFields = 12; protectionInfo = 13; permission = 15; ... }
+```
+
+The operation is `210` (`RECORD_SAVE_TYPE`), posted to
+`gateway.icloud.com/ckdatabase/api/client/record/save`, with the request riding in field 210 of
+the `RequestOperation` - the protocol's one nice rule: the field number equals the operation
+type. `saveSemantics` is `2` (FAIL_IF_EXISTS) to create and `3` (OVERRIDE) to update; `merge`
+keeps fields the request does not mention.
+
+### No protection tags
+
+`RecordSaveRequest` has two protection-tag fields, and the FindMy export notes describe them as
+the way a write is serialised. **The keychain does not use them.** A zone retrieve of the
+keychain's zones returns a `Zone` with nothing but a `zoneIdentifier` - no `protectionInfo`, no
+`recordProtectionInfo` - and no item record carries one either (no field 13). The keychain does
+its own encryption with the class key, so CloudKit never encrypts its records. Both tag fields
+are therefore left unset.
+
+### What a record looks like
+
+A real item record, decoded:
+
+```
+CKDPRecord {
+  etag = "v"                       # server-assigned
+  recordIdentifier = { value = Identifier{name: <uuid>, type: RECORD},
+                       zoneIdentifier = { value = Identifier{name: "Passwords", type: RECORD_ZONE},
+                                          ownerIdentifier = Identifier{name: <cloudKitUserId>, type: USER} } }
+  type = { name = "item" }
+  createdBy / modifiedBy = Identifier{<cloudKitUserId>, USER}
+  timeStatistics = { creation, modification }          # Apple epoch doubles
+  fields = [ { identifier = { name = "data" }, value = { type = BYTES, bytesValue = <512 B> } }, ... ]
+  modifiedByDevice = "<64 hex chars>"
+  permission = READ_WRITE
+}
+```
+
+The field values are a tagged union: `type` says what the value *is* (`BYTES_TYPE = 1`,
+`STRING_TYPE = 3`, `REFERENCE_TYPE = 5`, `INT64_TYPE = 7`), and `isEncrypted` (13) is **not**
+used by the keychain - its own encryption is opaque to CloudKit. A `parentkeyref` is a
+*reference* to another record (`type = VALIDATING`, then the record identifier of the class key).
+
+**Check:** re-encoding all 472 item records of the `Passwords` zone with this module's encoder
+reproduces Apple's bytes exactly - every field, and every `recordIdentifier`.
+
+### Which key an item hangs under
+
+The `Passwords` zone has three `synckey` records (`class` = `tlk`, `classA`, `classC`), each
+named by its own UUID and each carrying the key it protects, wrapped by its parent. The
+`currentkey` records (named `tlk`, `classA`, `classC`) point at the *current* key of each class.
+Web passwords live under `classA`, so a new item's `parentkeyref` is the `classA` key's record
+name, and the item key is wrapped with the class key itself (`AES-256-SIV`, no associated data).
+
+The class key is reachable because the sponsor's TLKShare carries it - see Stage 5. **No new
+TLKShare is needed to write:** the view's key is already shared with the user's own peers.
+
+### The item itself
+
+An `inet` item, with the attribute set Apple's clients write:
+
+| attribute | value |
+| --- | --- |
+| `class` / `atyp` | `inet` / `form` |
+| `agrp` | `com.apple.cfnetwork` |
+| `desc` / `icmt` | `Web form password` / `default` |
+| `labl` | `<srvr> (<acct>)` |
+| `srvr` / `acct` | the site / the account |
+| `v_Data` | the secret |
+| `pdmn` | `ak` - every item in the zone carries this |
+| `ptcl` | `htps` (https) or `http` |
+| `port` / `path` / `sdmn` | `0` / `""` / `""` |
+| `musr` | empty |
+| `cdat` / `mdat` | naive UTC datetimes - **these pick the current version** |
+| `tomb` | `0` |
+| `sha1` | 20 opaque bytes (see below) |
+
+Three findings worth keeping:
+
+- **The `Passwords` view has no "current item" pointer.** Unlike the `Manatee` view (which has
+  `currentitem` records naming the live item), every item in `Passwords` carries
+  `server_wascurrent = 0` and `server_suggestDeletion = 0`, and a credential that exists in
+  several versions is distinguished only by `mdat` - the newest wins. So a new item must carry
+  the current time, and it does not have to touch any other record.
+- **`sha1` is not a hash of the password.** Items with *identical* passwords carry *different*
+  `sha1` values, and it is not the hash of the item key, the record name or any combination of
+  them that was tried. Nothing can verify it, so it is opaque - random bytes reproduce what
+  Apple's clients write.
+- **The classic format is still the credential.** A modern credential is three items: the
+  `Web form password` item (which holds the secret), a `Password Manager Metadata` item
+  (last-used, titles) and a `Website Metadata` item (per-site metadata). The metadata items hold
+  no secret, so writing the classic item is what actually stores the password - and it is what
+  any Apple device understands.
+
+### The write, and the check that it worked
+
+`icp add <domain>` builds the item, wraps the item key with the class key, encrypts the plist
+under the record's authenticated data (the record's name, `encver`, `gen` and the class key id -
+so the payload cannot be moved to another record), and saves it.
+
+A save response is not proof - the escrow service reports success for writes that addressed
+nothing. So the write is **re-read and decrypted** afterwards: the record is fetched from the
+zone again, the item key unwrapped, the authenticated data recomputed from the record as it now
+stands, and the secret compared. A rollback path exists too (`icp/keychain/write.py
+delete_record`, op 214).
+
 ## Hide My Email (web-SRP)
 
 iCloud+ Hide My Email aliases are not Keychain items - a full CKKS sync across every zone

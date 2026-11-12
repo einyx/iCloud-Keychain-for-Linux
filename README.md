@@ -208,11 +208,25 @@ if your sign-in has expired they stop and wait for `icp login`. `icp status` sho
 Shared password groups you created in the Passwords app are synced too; groups someone else
 shared with you are not yet.
 
+## Adding a password to your iCloud Keychain
+
+```
+icp add example.com
+```
+
+Writes the password into the **real** iCloud Keychain - the `Passwords` view - so it reaches your
+Apple devices, not just this machine. It asks for the account name and the password (the password
+is never stored on the command line; `--password-stdin` reads it from a pipe instead).
+
+The write is checked, not assumed: the entry is read back out of the keychain and decrypted
+before `icp add` reports success, and it is added to the local vault so it is usable right away.
+
 ## All commands
 
 ```
 login    sign in, join your iCloud Keychain, and download your passwords
 show     browse and search your passwords and Hide My Email addresses
+add      add a password to the iCloud Keychain (and to the local vault)
 sync     refresh your passwords now (--background for unattended runs, --force)
 status   last sync, next allowed sync, whether a login is needed (--json)
 diag     read-only diagnostics: zones, groups (counts only, no secrets)

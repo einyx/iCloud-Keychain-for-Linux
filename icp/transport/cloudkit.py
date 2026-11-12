@@ -26,6 +26,8 @@ VERIFY_TLS = True
 CKCODE_INVOKE_URL = "https://gateway.icloud.com/ckcoderouter/api/client/code/invoke"
 CKDATABASE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/sync"
 CKDATABASE_ZONE_SYNC_URL = "https://gateway.icloud.com/ckdatabase/api/client/zone/sync"
+CKDATABASE_SAVE_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/save"
+CKDATABASE_DELETE_URL = "https://gateway.icloud.com/ckdatabase/api/client/record/delete"
 CK_APP_INIT_URL = "https://gateway.icloud.com/setup/setup/ck/v1/ckAppInit"
 CK_SERVICE_IDENTITY = "com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)"
 CUTTLEFISH_CONTAINER = "com.apple.security.keychain"
@@ -90,29 +92,34 @@ class DeviceConfig:
 
 def build_header(config: DeviceConfig, *, container: str = CUTTLEFISH_CONTAINER,
                  bundle: str = CUTTLEFISH_BUNDLE, env: int = ENV_PRODUCTION,
-                 database: int = DB_PRIVATE, isolation: int = ISOLATION_ZONE) -> bytes:
+                 database: int = DB_PRIVATE, isolation: int = ISOLATION_ZONE,
+                 locale: tuple[str, str] | None = None) -> bytes:
     """RequestOperation.Header. userToken stays empty here - the cloudKitToken goes in the
-    `x-cloudkit-authtoken` HTTP header, not this body field."""
-    return (Writer()
-            .string(2, container)
-            .string(3, bundle)
-            .message(7, _identifier(config.device_uuid, IDENTIFIER_TYPE_DEVICE))
-            .string(8, config.software_version)
-            .string(9, config.hardware_version)
-            .string(10, "com.apple.cloudkit.CloudKitDaemon")
-            .string(11, "1970")
-            .string(18, "5.0")              # mmcsProtocolVersion
-            .uint64(19, env)                # applicationContainerEnvironment
-            .string(21, config.name)        # deviceAssignedName
-            .string(22, config.device_uuid)  # deviceHardwareID
-            .uint64(23, database)           # targetDatabase
-            .uint64(25, isolation)          # isolationLevel
-            .uint64(29, 0)                  # unk1
-            .string(32, hashlib.sha1(config.device_uuid.encode()).hexdigest())  # unk2
-            .string(33, config.serial)      # deviceSerial
-            .uint64(34, 0)                  # unk3
-            .uint64(35, 1)                  # unk4
-            .finish())
+    `x-cloudkit-authtoken` HTTP header, not this body field.
+
+    `locale` is (languageCode, regionCode) at field 17. Reads do not need it; writes do."""
+    w = Writer()
+    w.string(2, container)
+    w.string(3, bundle)
+    w.message(7, _identifier(config.device_uuid, IDENTIFIER_TYPE_DEVICE))
+    w.string(8, config.software_version)
+    w.string(9, config.hardware_version)
+    w.string(10, "com.apple.cloudkit.CloudKitDaemon")
+    w.string(11, "1970")
+    if locale:
+        w.message(17, Writer().string(1, locale[0]).string(2, locale[1]).finish())
+    w.string(18, "5.0")              # mmcsProtocolVersion
+    w.uint64(19, env)                # applicationContainerEnvironment
+    w.string(21, config.name)        # deviceAssignedName
+    w.string(22, config.device_uuid)  # deviceHardwareID
+    w.uint64(23, database)           # targetDatabase
+    w.uint64(25, isolation)          # isolationLevel
+    w.uint64(29, 0)                  # unk1
+    w.string(32, hashlib.sha1(config.device_uuid.encode()).hexdigest())  # unk2
+    w.string(33, config.serial)      # deviceSerial
+    w.uint64(34, 0)                  # unk3
+    w.uint64(35, 1)                  # unk4
+    return w.finish()
 
 
 def build_request_operation_generic(header: bytes, op_type: int, request_field: int,
@@ -264,10 +271,11 @@ class CloudKitTransport:
 
     def _perform(self, url: str, op_type: int, request_field: int, request_bytes: bytes,
                  *, bundle: str, routing_hint: str | None = None,
-                 database_scope: str = "Private", database: int = DB_PRIVATE) -> CloudKitResult:
+                 database_scope: str = "Private", database: int = DB_PRIVATE,
+                 locale: tuple[str, str] | None = None) -> CloudKitResult:
         """LIVE. Build + gzip + POST a RequestOperation, parse + check the ResponseOperation."""
         header = build_header(self.device, container=self.container, bundle=bundle,
-                              database=database)
+                              database=database, locale=locale)
         req = build_request_operation_generic(header, op_type, request_field, request_bytes)
         body = gzip.compress(delimit(req))
         try:
@@ -314,3 +322,27 @@ class CloudKitTransport:
             FIELD_ZONE_RETRIEVE_CHANGES, req, bundle=bundle,
             database_scope=database_scope, database=database)
         return result.field(FIELD_ZONE_RETRIEVE_CHANGES) or b""
+
+    def save_record(self, record_request_bytes: bytes, *, bundle: str = SECURITYD_BUNDLE,
+                    database_scope: str = "Private", database: int = DB_PRIVATE,
+                    locale: tuple[str, str] | None = ("en-US", "US")) -> bytes:
+        """LIVE. Save one record. `record_request_bytes` is a CKDPRecordSaveRequest.
+
+        A save is the one operation that needs the full device identity (deviceIdentifier,
+        deviceAssignedName, deviceSerial) and a locale; the header builder always sends
+        the identity, and the locale is passed here."""
+        result = self._perform(
+            CKDATABASE_SAVE_URL, ckks.OP_TYPE_RECORD_SAVE, ckks.FIELD_RECORD_SAVE,
+            record_request_bytes, bundle=bundle, database_scope=database_scope,
+            database=database, locale=locale)
+        return result.field(ckks.FIELD_RECORD_SAVE) or b""
+
+    def delete_record(self, record_request_bytes: bytes, *, bundle: str = SECURITYD_BUNDLE,
+                      database_scope: str = "Private", database: int = DB_PRIVATE,
+                      locale: tuple[str, str] | None = ("en-US", "US")) -> bytes:
+        """LIVE. Delete one record - the rollback path for a write that went wrong."""
+        result = self._perform(
+            CKDATABASE_DELETE_URL, ckks.OP_TYPE_RECORD_DELETE, ckks.FIELD_RECORD_DELETE,
+            record_request_bytes, bundle=bundle, database_scope=database_scope,
+            database=database, locale=locale)
+        return result.field(ckks.FIELD_RECORD_DELETE) or b""

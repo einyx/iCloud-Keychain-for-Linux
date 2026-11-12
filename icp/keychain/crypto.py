@@ -4,6 +4,7 @@ key unwrap. See RESEARCH.md "keychain/crypto.py"."""
 from __future__ import annotations
 
 import hashlib
+import os
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM, AESSIV
@@ -49,6 +50,12 @@ def siv_unwrap(key64: bytes, wrapped: bytes, associated_data=None) -> bytes:
     return AESSIV(key64).decrypt(wrapped, list(associated_data or []))
 
 
+def siv_wrap(key64: bytes, plaintext: bytes, associated_data=None) -> bytes:
+    """The inverse of siv_unwrap: AES-SIV is deterministic, so the same key, plaintext and
+    associated data always give the same wrapped bytes."""
+    return AESSIV(key64).encrypt(plaintext, list(associated_data or []))
+
+
 def _strip_iso7816_padding(data: bytes) -> bytes:
     ptr = len(data)
     while ptr > 0:
@@ -61,6 +68,12 @@ def _strip_iso7816_padding(data: bytes) -> bytes:
     return data
 
 
+def _pad_iso7816(data: bytes) -> bytes:
+    """The inverse of _strip_iso7816_padding: 0x80 then 0x00s, to a multiple of 16."""
+    pad = 16 - (len(data) % 16)
+    return data + b"\x80" + b"\x00" * (pad - 1)
+
+
 def decrypt_item(item_key64: bytes, data: bytes, aad_values=None) -> bytes:
     """Decrypt an `item` record's `data` (= randomIV(16) || SIV(tag||ciphertext)). The leading
     random IV is prepended as the first associated-data element."""
@@ -68,3 +81,11 @@ def decrypt_item(item_key64: bytes, data: bytes, aad_values=None) -> bytes:
     headers = [iv] + list(aad_values or [])
     plaintext = siv_unwrap(item_key64, data[16:], headers)
     return _strip_iso7816_padding(plaintext)
+
+
+def encrypt_item(item_key64: bytes, plaintext: bytes, aad_values=None) -> bytes:
+    """The inverse of decrypt_item: a fresh random IV, then the SIV-wrapped payload with the
+    IV as the first associated-data element."""
+    iv = os.urandom(16)
+    headers = [iv] + list(aad_values or [])
+    return iv + siv_wrap(item_key64, _pad_iso7816(plaintext), headers)

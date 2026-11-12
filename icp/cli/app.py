@@ -760,6 +760,88 @@ def cmd_sync(args) -> int:
 EXIT_SKIPPED = 75
 
 
+def cmd_add(args) -> int:
+    """Add a password to the iCloud Keychain (and to the local vault).
+
+    Writes the item into the Passwords view of the keychain, re-reads it back and
+    decrypts it to confirm what actually landed, then adds it to the local vault
+    so it is usable right away.
+    """
+    from ..keychain import write as kcwrite
+    from ..vault.host import Credential
+    from ..vault.store import load_vault, save_vault
+
+    s = session.load()
+    if not s:
+        ui.err("not signed in - run: icp login")
+        return 1
+    if not (s.get("octagon") or {}).get("peer_id"):
+        ui.err("not joined to the keychain - run: icp login")
+        return 1
+
+    domain = (args.domain or "").strip()
+    if not domain:
+        ui.err("no domain given")
+        return 1
+    username = args.username or ui.ask("Username: ")
+    if not username:
+        ui.err("no username given")
+        return 1
+    if args.password_stdin:
+        password = sys.stdin.readline().rstrip("\n")
+    else:
+        password = ui.secret("Password: ")
+    if not password:
+        ui.err("empty password - nothing written")
+        return 1
+
+    device = Device.load_or_create()
+    try:
+        anisette = Anisette(args.anisette)
+        _ensure_fresh_tokens(s, device, anisette, interactive=sys.stdin.isatty())
+        session.save(s)
+        client = octagon.OctagonClient(s, device, anisette)
+        session.save(s)
+        result = kcwrite.add_internet_password(
+            client, domain, username, password,
+            title=args.title, notes=args.notes, protocol=args.protocol)
+    except (icloud.ICloudError, AnisetteError, GSAError, OctagonError, CloudKitError) as e:
+        ui.err(f"could not write to the keychain: {e}")
+        return 1
+    except kcwrite.KeychainWriteError as e:
+        ui.err(str(e))
+        return 1
+
+    record_name = result.get("record_name")
+    ui.step(f"Saved to the keychain (record {record_name}).")
+
+    ok = kcwrite.verify_saved_record(
+        client.transport, record_name=record_name, zone=kcwrite.PASSWORDS_ZONE,
+        user_id=client.user_id, class_key=result["class_key"],
+        expected_password=password, expected_username=username)
+    if not ok:
+        ui.err("the write could not be read back - the item is NOT confirmed in the keychain")
+        return 1
+    ui.out("Verified: re-read from the keychain and decrypted - the entry is there.")
+
+    # Make it usable locally right away; the next sync would find it anyway.
+    try:
+        store = load_vault()
+        cred = Credential(domain=domain, username=username, password=password,
+                          title=args.title or f"{domain} ({username})",
+                          notes=args.notes or "",
+                          mdat=time.time())
+        existing = {(c.domain.lower(), c.username.lower()) for c in store.all()}
+        if (domain.lower(), username.lower()) not in existing:
+            save_vault(type(store)(store.all() + [cred]))
+        else:
+            ui.step("Note: the local vault already had an entry for this site - "
+                    "a sync will reconcile them.")
+    except Exception as e:  # noqa: BLE001 - the write already happened; a vault hiccup is not fatal
+        ui.warn(f"saved to the keychain, but the local vault was not updated: {e}")
+    return 0
+
+
 def cmd_status(args) -> int:
     """Sync pacing state for status displays (no network, no secrets)."""
     import json
@@ -919,6 +1001,18 @@ def main(argv=None) -> int:
     syp.add_argument("--force", action="store_true",
                      help="ignore the minimum interval / backoff (not the login stop)")
     syp.set_defaults(func=cmd_sync)
+
+    adp = sub.add_parser(
+        "add", help="add a password to the iCloud Keychain (and to the local vault)")
+    adp.add_argument("domain", help="the site (e.g. example.com)")
+    adp.add_argument("-u", "--username", help="account name (prompted if omitted)")
+    adp.add_argument("--password-stdin", action="store_true",
+                     help="read the password from stdin instead of prompting")
+    adp.add_argument("--title", help="override the item's label")
+    adp.add_argument("--notes", help="store a comment with the item")
+    adp.add_argument("--protocol", choices=["htps", "http"],
+                     help="site protocol (default htps = https)")
+    adp.set_defaults(func=cmd_add)
 
     stp = sub.add_parser("status", help="sync pacing state (last sync, next allowed, login needed)")
     stp.add_argument("--json", action="store_true", help="machine-readable output")
